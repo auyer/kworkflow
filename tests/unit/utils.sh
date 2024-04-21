@@ -385,8 +385,8 @@ function assert_equals_helper()
 {
   local msg="$1"
   local line="$2"
-  local expected="$3"
-  local result_to_compare="$4"
+  local result_to_compare="$3"
+  local expected="$4"
 
   line=${line:-'Unknown line'}
 
