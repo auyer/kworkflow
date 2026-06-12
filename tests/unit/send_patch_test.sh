@@ -366,6 +366,14 @@ function test_mail_parser()
   expected='--dry-run'
   assert_equals_helper 'Set simulate flag' "$LINENO" "$expected" "${options_values['SIMULATE']}"
 
+  parse_mail_options '--keep-patch-files'
+  expected=1
+  assert_equals_helper 'Set keep-patch-files flag' "$LINENO" "$expected" "${options_values['KEEP_PATCH_FILES']}"
+
+  parse_mail_options '-k'
+  expected=1
+  assert_equals_helper 'Set keep-patch-files short flag' "$LINENO" "$expected" "${options_values['KEEP_PATCH_FILES']}"
+
   parse_mail_options '--to=name1@lala.com,name2@lala.xpto,name3 second <name3second@lala.com>'
   expected='name1@lala.com,name2@lala.xpto,name3 second <name3second@lala.com>'
   assert_equals_helper 'Set to flag' "$LINENO" "$expected" "${options_values['TO']}"
@@ -543,10 +551,73 @@ function test_mail_send()
   expected='git send-email --to="mail@test.com" --annotate --cover-letter --no-chain-reply-to --thread @^^'
   assert_equals_helper 'Testing default option' "$LINENO" "$expected" "$output"
 
+  # Test with --keep-patch-files (single patch, no cover letter)
+  local saved_opts
+  saved_opts="${send_patch_config[send_opts]}"
+  send_patch_config[send_opts]=''
+  parse_mail_options '--keep-patch-files'
+  output=$(mail_send 'TEST_MODE')
+  expected="git send-email @^"
+  expected+=$'\n'"git format-patch --output-directory=$PWD @^"
+  expected+=$'\n'"Patch files saved to $PWD"
+  assert_equals_helper 'Testing keep-patch-files option' "$LINENO" "$expected" "$output"
+
+  # Test with --keep-patch-files and --to (single patch)
+  parse_mail_options '--keep-patch-files' '--to=mail@test.com'
+  output=$(mail_send 'TEST_MODE')
+  expected='git send-email --to="mail@test.com" @^'
+  expected+=$'\n'"git format-patch --output-directory=$PWD @^"
+  expected+=$'\n'"Patch files saved to $PWD"
+  assert_equals_helper 'Testing keep-patch-files with --to option' "$LINENO" "$expected" "$output"
+  send_patch_config[send_opts]="$saved_opts"
+
   cd "$ORIGINAL_DIR" || {
     ret="$?"
     fail "($LINENO): Failed to move back to original dir"
     exit "$ret"
+  }
+}
+
+function test_mail_send_keep_patch_files_with_existing_patches()
+{
+  local output ret
+
+  cd "$FAKE_GIT" || {
+    ret="$?"
+    fail "($LINENO): Failed to move to fake git repo"
+    return "$ret"
+  }
+
+  cat > '0001-fake.patch' << 'EOF'
+From abc123 Mon Sep 17 00:00:00 2001
+From: Test <test@test.com>
+Subject: [PATCH] test
+
+diff --git a/file b/file
+index 0000000..1111111 100644
+--- a/file
++++ b/file
+@@ -1 +1 @@
+-old
++new
+EOF
+
+  parse_mail_options -k -- 0001-fake.patch
+  output=$(mail_send 'TEST_MODE')
+
+  assertTrue "($LINENO) Should include the .patch file" \
+    '[[ "$output" =~ 0001-fake\.patch ]]'
+  assertTrue "($LINENO) Should include format-patch command" \
+    '[[ "$output" =~ "git format-patch" ]]'
+  assertTrue "($LINENO) Should show saved message" \
+    '[[ "$output" =~ "Patch files saved" ]]'
+  assertTrue "($LINENO) Should NOT include @^ as default range" \
+    '! [[ "$output" =~ "@\^" ]]'
+
+  cd "$ORIGINAL_DIR" || {
+    ret="$?"
+    fail "($LINENO): Failed to return to original dir"
+    return "$ret"
   }
 }
 
@@ -568,7 +639,8 @@ function test_run_checkpatch_on_patches_passing()
 {
   local output
   local fake_patch="${_checkpatch_test_cache}/patches/0001-fake.patch"
-  local expected_checkpatch="$(join_path "$FAKE_KERNEL" 'scripts/checkpatch.pl')"
+  local expected_checkpatch
+  expected_checkpatch="$(join_path "$FAKE_KERNEL" 'scripts/checkpatch.pl')"
 
   install_fake_checkpatch 'checkpatch_pass.pl'
 
@@ -582,7 +654,8 @@ function test_run_checkpatch_on_patches_with_opts()
 {
   local output
   local fake_patch="${_checkpatch_test_cache}/patches/0001-fake.patch"
-  local expected_checkpatch="$(join_path "$FAKE_KERNEL" 'scripts/checkpatch.pl')"
+  local expected_checkpatch
+  expected_checkpatch="$(join_path "$FAKE_KERNEL" 'scripts/checkpatch.pl')"
 
   configurations['checkpatch_opts']='--no-tree'
   install_fake_checkpatch 'checkpatch_pass.pl'
@@ -597,7 +670,8 @@ function test_run_checkpatch_on_patches_with_multiple_opts()
 {
   local output
   local fake_patch="${_checkpatch_test_cache}/patches/0001-fake.patch"
-  local expected_checkpatch="$(join_path "$FAKE_KERNEL" 'scripts/checkpatch.pl')"
+  local expected_checkpatch
+  expected_checkpatch="$(join_path "$FAKE_KERNEL" 'scripts/checkpatch.pl')"
 
   configurations['checkpatch_opts']='--no-tree --quiet'
   install_fake_checkpatch 'checkpatch_pass.pl'

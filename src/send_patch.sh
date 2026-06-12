@@ -146,6 +146,7 @@ function mail_send()
   local extra_opts="${options_values['PASS_OPTION_TO_SEND_EMAIL']}"
   local private="${options_values['PRIVATE']}"
   local rfc="${options_values['RFC']}"
+  local keep_patch_files="${options_values['KEEP_PATCH_FILES']}"
   local use_default_to_cc_approach="${send_patch_config['use_default_to_cc_approach']}"
   local kernel_root
   local patch_count=0
@@ -240,6 +241,15 @@ function mail_send()
   [[ -n "$extra_opts" ]] && cmd+=" $extra_opts"
 
   cmd_manager "$flag" "$cmd"
+
+  if [[ -n "$keep_patch_files" ]]; then
+    local format_patch_cmd="git format-patch --output-directory=$PWD"
+    [[ -n "$cover_letter" ]] && format_patch_cmd+=" --cover-letter"
+    [[ -n "$version" ]] && format_patch_cmd+=" $version"
+    format_patch_cmd+=" $commit_range"
+    cmd_manager "$flag" "$format_patch_cmd"
+    say "Patch files saved to $PWD"
+  fi
 }
 
 # Validates the recipient list given by the user to the options `--to` and
@@ -1106,9 +1116,9 @@ function parse_mail_options()
   local patch_version=''
   local commit_count=''
   local rev_ret=-1
-  local short_options='s,t,f,v:,i,l,n,'
+  local short_options='s,t,f,v:,i,l,n,k,'
   local long_options='send,simulate,to:,cc:,setup,local,global,force,verify,verbose,'
-  long_options+='template::,interactive,no-interactive,no-checkpatch,list,private,rfc,'
+  long_options+='template::,interactive,no-interactive,no-checkpatch,list,private,rfc,keep-patch-files,'
   local pass_option_to_send_email
 
   long_options+='email:,name:,'
@@ -1145,6 +1155,7 @@ function parse_mail_options()
   options_values['RFC']=''
   options_values['COMMIT_RANGE']=''
   options_values['PRIVATE']=''
+  options_values['KEEP_PATCH_FILES']=''
   options_values['VERBOSE']=''
   options_values['NO_CHECKPATCH']=''
 
@@ -1225,6 +1236,10 @@ function parse_mail_options()
         ;;
       --private)
         options_values['PRIVATE']='--suppress-cc=all'
+        shift
+        ;;
+      --keep-patch-files | -k)
+        options_values['KEEP_PATCH_FILES']=1
         shift
         ;;
       --verify)
