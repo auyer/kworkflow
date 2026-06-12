@@ -181,3 +181,8 @@ the *<extra-args>* options, specifiyng the files after the two dashes::
 
   kw send-patch --simulate -s -- *.patch
 
+.. note::
+  A `<rev-range>` and existing patch files passed after `--` are mutually
+  exclusive. Use either `-s -3` (generate from last 3 commits) or `-s -- *.patch`
+  (send existing files), but not both.
+
