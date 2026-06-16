@@ -273,6 +273,308 @@ function test_remove_blocked_recipients()
   multilineAssertEquals "($LINENO) Removing two emails." "$expected" "$output"
 }
 
+function test_get_git_editor()
+{
+  local editor
+
+  # Prefer git var GIT_EDITOR resolution; if the resolved editor is available,
+  # it must be executable. Empty is also valid (no editors on the system).
+  editor="$(get_git_editor)"
+  if [[ -n "$editor" ]]; then
+    assertTrue "($LINENO) Editor should be an available command" \
+      'command -v "${editor%% *}" >/dev/null 2>&1'
+  fi
+}
+
+function test_get_git_editor_fallback()
+{
+  local editor
+
+  # Mock git so that git var GIT_EDITOR fails; function should fall back to
+  # common editors available in PATH, or return empty if none found.
+  # shellcheck disable=SC2329
+  git()
+  {
+    [[ "$1" == var && "$2" == GIT_EDITOR ]] && return 1
+    command git "$@"
+  }
+
+  editor="$(get_git_editor)"
+  if [[ -n "$editor" ]]; then
+    assertTrue "($LINENO) Editor should be one of the common editors" \
+      '[[ " vim vi nano " =~ " $editor " ]]'
+  fi
+
+  unset -f git
+}
+
+function test_handle_cover_letter_post_send()
+{
+  local output ret save_path
+  local edited_cov="${KW_CACHE_DIR}/.cov_letter_edited"
+  local template_cov="${KW_CACHE_DIR}/.cov_letter_template"
+  local flags_repr=" --to=test@email.com"
+
+  # Setup: create directories and test files
+  mkdir -p "${KW_CACHE_DIR}/patches"
+  save_path="${SHUNIT_TMPDIR}/0000-cover-letter.patch"
+
+  # Create edited and template files with different content
+  printf 'template content\n' > "$template_cov"
+  printf 'user edited cover letter\n' > "$edited_cov"
+
+  # Test 1: simulate mode with edited cover letter → should save
+  output=$(handle_cover_letter_post_send '--dry-run' '0' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "$flags_repr" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) Simulate should save" "$LINENO" 0 "$ret"
+  assertTrue "($LINENO) File should be saved" '[[ -f "$save_path" ]]'
+  local file_content
+  file_content=$(< "$save_path")
+  assert_equals_helper "($LINENO) Saved content should match edited" "$LINENO" \
+    'user edited cover letter' "$file_content"
+  assertTrue "($LINENO) Output should mention saved path" \
+    '[[ "$output" =~ "saved to" ]]'
+  assertTrue "($LINENO) Output should include flags" \
+    '[[ "$output" =~ "$flags_repr" ]]'
+
+  # Test 2: failure mode with edited cover letter → should save (different message)
+  rm -f "$save_path"
+  output=$(handle_cover_letter_post_send '' '1' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "$flags_repr" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) Failure should save" "$LINENO" 0 "$ret"
+  assertTrue "($LINENO) File should be saved on failure" '[[ -f "$save_path" ]]'
+  assertTrue "($LINENO) Output should mention failure" \
+    '[[ "$output" =~ "sending failed" ]]'
+
+  # Test 3: unedited (same content as template) → should NOT save
+  cp "$template_cov" "$edited_cov"
+  rm -f "$save_path"
+  output=$(handle_cover_letter_post_send '--dry-run' '0' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "$flags_repr" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) Unedited should not save" "$LINENO" 1 "$ret"
+  assertTrue "($LINENO) File should NOT exist" '[[ ! -f "$save_path" ]]'
+
+  # Test 4: no cover letter → should NOT save
+  printf 'content' > "$edited_cov"
+  rm -f "$save_path"
+  output=$(handle_cover_letter_post_send '--dry-run' '0' '' \
+    "$edited_cov" "$template_cov" "$save_path" "$flags_repr" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) No cover letter should not save" "$LINENO" 1 "$ret"
+
+  # Test 5: success (no simulate, no failure) → should NOT save
+  cp "$template_cov" "$edited_cov" # reset edited to different content
+  printf 'different content\n' > "$edited_cov"
+  rm -f "$save_path"
+  output=$(handle_cover_letter_post_send '' '0' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) Success should not save" "$LINENO" 1 "$ret"
+
+  # Test 6: edited file doesn't exist → should NOT save
+  rm -f "$edited_cov"
+  rm -f "$save_path"
+  output=$(handle_cover_letter_post_send '--dry-run' '0' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) No edited file should not save" "$LINENO" 1 "$ret"
+
+  # Test 7: name collision, user answers No → timestamp-prefixed file saved
+  printf 'user edited cover letter\n' > "$edited_cov"
+  printf 'template content\n' > "$template_cov"
+  printf 'existing cover letter\n' > "$save_path"
+  output=$(printf 'n\n' | handle_cover_letter_post_send '--dry-run' '0' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "$flags_repr" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) Collision (no) should save" "$LINENO" 0 "$ret"
+  assertTrue "($LINENO) Original file should still exist" \
+    '[[ -f "$save_path" ]]'
+  local original_content
+  original_content=$(< "$save_path")
+  assert_equals_helper "($LINENO) Original file should be unchanged" "$LINENO" \
+    'existing cover letter' "$original_content"
+  local _dir _found
+  _dir="${save_path%/*}"
+  _found=''
+  for f in "$_dir"/0000-cover-letter.kw-*.patch; do
+    [[ -f "$f" ]] && _found="$f" && break
+  done
+  assertTrue "($LINENO) Timestamped file should exist" '[[ -n "$_found" ]]'
+  assertTrue "($LINENO) Output should mention timestamped path" \
+    '[[ "$output" =~ "0000-cover-letter.kw-"[0-9][0-9]"-"[0-9][0-9]"-"[0-9][0-9]"_"[0-9][0-9][0-9][0-9][0-9][0-9]".patch" ]]'
+
+  # Test 8: name collision, user answers Yes → overwrite existing file
+  rm -f "$_found"
+  printf 'user edited cover letter\n' > "$edited_cov"
+  printf 'different template\n' > "$template_cov"
+  printf 'existing cover letter\n' > "$save_path"
+  output=$(printf 'y\n' | handle_cover_letter_post_send '--dry-run' '0' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "$flags_repr" '0')
+  ret="$?"
+  assert_equals_helper "($LINENO) Collision (yes) should save" "$LINENO" 0 "$ret"
+  assertTrue "($LINENO) File should be overwritten" '[[ -f "$save_path" ]]'
+  local overwritten_content
+  overwritten_content=$(< "$save_path")
+  assert_equals_helper "($LINENO) Overwritten content should match edited" "$LINENO" \
+    'user edited cover letter' "$overwritten_content"
+
+  # Test 9: name collision, user-provided file → no prompt, overwrite
+  printf 'user edited cover letter\n' > "$edited_cov"
+  printf 'different template\n' > "$template_cov"
+  printf 'previous content\n' > "$save_path"
+  output=$(handle_cover_letter_post_send '--dry-run' '0' 'cover-letter' \
+    "$edited_cov" "$template_cov" "$save_path" "$flags_repr" '1')
+  ret="$?"
+  assert_equals_helper "($LINENO) User-provided should save" "$LINENO" 0 "$ret"
+  assertTrue "($LINENO) User-provided should overwrite" '[[ -f "$save_path" ]]'
+  local ov_content
+  ov_content=$(< "$save_path")
+  assert_equals_helper "($LINENO) User-provided content should match" "$LINENO" \
+    'user edited cover letter' "$ov_content"
+  assertTrue "($LINENO) Should NOT show override prompt for user-provided" \
+    '! [[ "$output" =~ "Will save cover letter as" ]]'
+
+  # Cleanup
+  rm -f "$edited_cov" "$template_cov" "$save_path" "$(dirname "$save_path")"/0000-cover-letter.kw-*.patch
+}
+
+function test_mail_send_cover_letter_auto_save_on_simulate()
+{
+  local output saved_opts
+
+  cd "$FAKE_GIT" || {
+    ret="$?"
+    fail "($LINENO): Failed to move to fake git dir"
+    exit "$ret"
+  }
+
+  # Setup: multi-patch range + simulate
+  saved_opts="${send_patch_config[send_opts]}"
+  send_patch_config[send_opts]='--annotate --cover-letter --no-chain-reply-to --thread'
+  parse_mail_options '--simulate' '@^^'
+
+  # Pre-create the edited and template files (simulates what the GIT_EDITOR
+  # wrapper would have created during a real git send-email execution)
+  printf 'template text\n' > "${KW_CACHE_DIR}/.cov_letter_template"
+  printf 'user edited cover letter content\n' > "${KW_CACHE_DIR}/.cov_letter_edited"
+
+  output=$(mail_send 'TEST_MODE')
+
+  # The cover letter should be saved to $PWD
+  assertTrue "($LINENO) Cover letter should be saved to PWD" \
+    '[[ -f "$PWD/0000-cover-letter.patch" ]]'
+
+  local file_content
+  file_content=$(< "$PWD/0000-cover-letter.patch")
+  assert_equals_helper "($LINENO) Saved content mismatch" "$LINENO" \
+    'user edited cover letter content' "$file_content"
+
+  assertTrue "($LINENO) Output should mention saved message" \
+    '[[ "$output" =~ "cover letter written" ]]'
+
+  # Restore original config
+  send_patch_config[send_opts]="$saved_opts"
+
+  # Cleanup
+  rm -f "$PWD/0000-cover-letter.patch"
+  rm -f "${KW_CACHE_DIR}/.cov_letter_template" \
+    "${KW_CACHE_DIR}/.cov_letter_edited"
+
+  cd "$ORIGINAL_DIR" || {
+    ret="$?"
+    fail "($LINENO): Failed to move back to original dir"
+    exit "$ret"
+  }
+}
+
+function test_mail_send_cover_letter_auto_save_not_on_success()
+{
+  local output saved_opts
+
+  cd "$FAKE_GIT" || {
+    ret="$?"
+    fail "($LINENO): Failed to move to fake git dir"
+    exit "$ret"
+  }
+
+  # Setup: multi-patch range, NO simulate
+  saved_opts="${send_patch_config[send_opts]}"
+  send_patch_config[send_opts]='--annotate --cover-letter --no-chain-reply-to --thread'
+  parse_mail_options '@^^'
+
+  printf 'user edited cover letter content\n' > "${KW_CACHE_DIR}/.cov_letter_edited"
+  printf 'template text\n' > "${KW_CACHE_DIR}/.cov_letter_template"
+
+  output=$(mail_send 'TEST_MODE')
+
+  # Cover letter should NOT be saved (successful send, no --simulate)
+  assertTrue "($LINENO) Cover letter should NOT be saved on success" \
+    '[[ ! -f "$PWD/0000-cover-letter.patch" ]]'
+
+  assertTrue "($LINENO) Output should NOT contain saved message" \
+    '[[ ! "$output" =~ "saved to" ]]'
+
+  # Restore original config
+  send_patch_config[send_opts]="$saved_opts"
+
+  # Cleanup
+  rm -f "${KW_CACHE_DIR}/.cov_letter_template" \
+    "${KW_CACHE_DIR}/.cov_letter_edited"
+
+  cd "$ORIGINAL_DIR" || {
+    ret="$?"
+    fail "($LINENO): Failed to move back to original dir"
+    exit "$ret"
+  }
+}
+function test_mail_send_no_available_editor()
+{
+  local output saved_opts _saved_func
+
+  cd "$FAKE_GIT" || {
+    ret="$?"
+    fail "($LINENO): Failed to move to fake git dir"
+    exit "$ret"
+  }
+
+  # Save and override get_git_editor to simulate no editor available
+  _saved_func=$(declare -f get_git_editor)
+  # shellcheck disable=SC2329
+  get_git_editor()
+  {
+    return 1
+  }
+
+  saved_opts="${send_patch_config[send_opts]}"
+  send_patch_config[send_opts]='--annotate --cover-letter --no-chain-reply-to --thread'
+  parse_mail_options '@^^'
+
+  output=$(mail_send 'TEST_MODE' 2>&1)
+
+  # No wrapper should be created
+  assertTrue "($LINENO) Wrapper should not exist" \
+    '[[ ! -f "${KW_CACHE_DIR}/.editor_wrapper.sh" ]]'
+
+  # Command should still run (warning suppressed in TEST_MODE)
+  assertTrue "($LINENO) git send-email command should be in output" \
+    '[[ "$output" =~ "git send-email" ]]'
+
+  # Restore original environment
+  send_patch_config[send_opts]="$saved_opts"
+  if [[ -n "$_saved_func" ]]; then
+    eval "$_saved_func"
+  fi
+
+  cd "$ORIGINAL_DIR" || {
+    ret="$?"
+    fail "($LINENO): Failed to move back"
+    exit "$ret"
+  }
+}
+
 function test_mail_parser()
 {
   local output
@@ -311,6 +613,13 @@ function test_mail_parser()
   parse_mail_options -- --subject-prefix="PATCH i-g-t" HEAD^
   expected="'--subject-prefix=PATCH i-g-t' HEAD^"
   assert_equals_helper 'Set passthrough options with space' "$LINENO" "$expected" "${options_values['PASS_OPTION_TO_SEND_EMAIL']}"
+
+  parse_mail_options -s -- 0000-cover-letter.kw-26-07-29_122608.patch
+  expected='0000-cover-letter.kw-26-07-29_122608.patch'
+  assert_equals_helper '-26 in filename should not be parsed as commit count' "$LINENO" \
+    "$expected" "${options_values['PASS_OPTION_TO_SEND_EMAIL']}"
+  assert_equals_helper '-26 in filename should not set COMMIT_RANGE' "$LINENO" \
+    '' "${options_values['COMMIT_RANGE']}"
 
   parse_mail_options -375
   expected='-375'
@@ -673,6 +982,7 @@ function test_run_checkpatch_on_patches_with_multiple_opts()
   local expected_checkpatch
   expected_checkpatch="$(join_path "$FAKE_KERNEL" 'scripts/checkpatch.pl')"
 
+  # shellcheck disable=SC2034 # read by run_checkpatch_on_patches
   configurations['checkpatch_opts']='--no-tree --quiet'
   install_fake_checkpatch 'checkpatch_pass.pl'
 
@@ -820,6 +1130,7 @@ function test_missing_options()
   compare_array_values 'expected_arr' 'output' "$LINENO"
 
   mapfile -t output < <(missing_options 'optional_config_options')
+  # shellcheck disable=SC2034 # used via string reference in compare_array_values
   expected_arr=('sendemail.smtpencryption')
   compare_array_values 'expected_arr' 'output' "$LINENO"
 
@@ -1016,6 +1327,7 @@ function test_interactive_prompt()
   get_configs
 
   output="$(printf '%s\n' "${inputs[@]}" | interactive_prompt 'test_config_opts')"
+  # shellcheck disable=SC2034 # used cross-file by get_configs (reset state)
   smtpuser_autoset=0
 
   expected='Skipping test0...'
@@ -1285,6 +1597,7 @@ function test_mail_list()
   local output
   local ret
 
+  # shellcheck disable=SC2034 # used via string reference in compare_command_sequence
   local -a expected_results=(
     'These are the essential configurations for git send-email:'
     'NAME'
@@ -1671,6 +1984,107 @@ EOF
   }
 }
 
+function test_mail_send_auto_save_user_provided_cover_letter()
+{
+  local output ret saved_opts
+
+  cd "$FAKE_GIT" || {
+    ret="$?"
+    fail "($LINENO): Failed to move to fake git repo"
+    return "$ret"
+  }
+
+  cat > '0000-cover-letter.patch' << 'EOF'
+From abc123 Mon Sep 17 00:00:00 2001
+From: Test <test@test.com>
+Subject: [PATCH 0/1] cover test
+
+cover letter body
+EOF
+
+  saved_opts="${send_patch_config[send_opts]}"
+  send_patch_config[send_opts]='--annotate --cover-letter --no-chain-reply-to --thread'
+
+  parse_mail_options -s --simulate -3 -- 0000-cover-letter.patch
+
+  # Simulate the GIT_EDITOR wrapper having captured an edit
+  printf 'template\n' > "${KW_CACHE_DIR}/.cov_letter_template"
+  printf 'user edited cover letter\n' > "${KW_CACHE_DIR}/.cov_letter_edited"
+
+  output=$(mail_send 'TEST_MODE')
+  ret="$?"
+  assert_equals_helper 'Should succeed' "$LINENO" 0 "$ret"
+  assertTrue "($LINENO) Should not have --cover-letter in opts" \
+    '! [[ "$output" =~ --cover-letter ]]'
+  assertTrue "($LINENO) Should save back to user-provided file" \
+    '[[ -f "$PWD/0000-cover-letter.patch" ]]'
+
+  local file_content
+  file_content=$(< "$PWD/0000-cover-letter.patch")
+  assert_equals_helper "($LINENO) Saved content should match edited" "$LINENO" \
+    'user edited cover letter' "$file_content"
+
+  send_patch_config[send_opts]="$saved_opts"
+  rm -f "$PWD/0000-cover-letter.patch" \
+    "${KW_CACHE_DIR}/.cov_letter_template" \
+    "${KW_CACHE_DIR}/.cov_letter_edited"
+
+  cd "$ORIGINAL_DIR" || {
+    ret="$?"
+    fail "($LINENO): Failed to return to original dir"
+    return "$ret"
+  }
+}
+
+function test_mail_send_auto_save_prefixed_cover_letter()
+{
+  local output ret saved_opts
+
+  cd "$FAKE_GIT" || {
+    ret="$?"
+    fail "($LINENO): Failed to move to fake git repo"
+    return "$ret"
+  }
+
+  cat > '0000-cover-letter.kw-26-07-29_122608.patch' << 'EOF'
+From abc123 Mon Sep 17 00:00:00 2001
+From: Test <test@test.com>
+Subject: [PATCH 0/1] cover test
+
+cover letter body
+EOF
+
+  saved_opts="${send_patch_config[send_opts]}"
+  send_patch_config[send_opts]='--annotate --cover-letter --no-chain-reply-to --thread'
+
+  parse_mail_options -s --simulate -3 -- 0000-cover-letter.kw-26-07-29_122608.patch
+
+  printf 'template\n' > "${KW_CACHE_DIR}/.cov_letter_template"
+  printf 'user edited cover letter\n' > "${KW_CACHE_DIR}/.cov_letter_edited"
+
+  output=$(mail_send 'TEST_MODE')
+  ret="$?"
+  assert_equals_helper 'Should succeed' "$LINENO" 0 "$ret"
+  assertTrue "($LINENO) Should save back to prefixed file" \
+    '[[ -f "$PWD/0000-cover-letter.kw-26-07-29_122608.patch" ]]'
+
+  local file_content
+  file_content=$(< "$PWD/0000-cover-letter.kw-26-07-29_122608.patch")
+  assert_equals_helper "($LINENO) Saved content should match edited" "$LINENO" \
+    'user edited cover letter' "$file_content"
+
+  send_patch_config[send_opts]="$saved_opts"
+  rm -f "$PWD/0000-cover-letter.kw-26-07-29_122608.patch" \
+    "${KW_CACHE_DIR}/.cov_letter_template" \
+    "${KW_CACHE_DIR}/.cov_letter_edited"
+
+  cd "$ORIGINAL_DIR" || {
+    ret="$?"
+    fail "($LINENO): Failed to return to original dir"
+    return "$ret"
+  }
+}
+
 function test_mail_send_rejects_range_with_patch_files()
 {
   local output
@@ -1719,6 +2133,20 @@ EOF
   output=$(mail_send 'TEST_MODE' 2>&1)
   ret="$?"
   assert_equals_helper 'Should allow range + cover-letter' "$LINENO" 0 "$ret"
+
+  # Allow range + prefixed cover-letter files
+  cat > '0000-cover-letter.kw-26-07-29_122608.patch' << 'EOF'
+From abc123 Mon Sep 17 00:00:00 2001
+From: Test <test@test.com>
+Subject: [PATCH 0/1] cover test
+
+cover letter body
+EOF
+  parse_mail_options -s --simulate -3 -- 0000-cover-letter.kw-26-07-29_122608.patch
+
+  output=$(mail_send 'TEST_MODE' 2>&1)
+  ret="$?"
+  assert_equals_helper 'Should allow range + prefixed cover-letter' "$LINENO" 0 "$ret"
 
   cd "$ORIGINAL_DIR" || {
     ret="$?"

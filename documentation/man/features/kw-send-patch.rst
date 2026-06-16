@@ -79,10 +79,26 @@ OPTIONS
   Do everything without actually sending the e-mail. This is similar to
   ``git send-email``'s ``--dry-run`` option.
 
+  .. note::
+    After a ``--simulate`` run, if you edited the cover letter, it is
+    automatically saved in the current directory.  You can reuse its
+    contents in a future send by passing the file with ``-- cover-letter.patch``
+    arguments, or by copying the contents into a new cover letter.
+
 -k, \--keep-patch-files:
   Save the generated ``.patch`` files (and cover letter) to the current
   working directory. Useful in combination with ``--simulate`` to review
   and edit patches before sending.
+
+  .. note::
+    If ``--simulate`` is used together with ``--keep-patch-files``, the
+    cover letter is saved once by the auto-save mechanism (preserving
+    your edits) and the remaining patch files are saved separately by
+    the ``--keep-patch-files`` logic.
+
+  .. note::
+    If sending fails and you had edited the cover letter, it is
+    automatically saved to the current working directory.
 
 \--private:
   Suppress auto generation of recipients.
@@ -190,8 +206,16 @@ To generate patches for review before sending them::
 
   kw send-patch --keep-patch-files --simulate -s -3
 
+If sending fails, a previously edited cover letter is saved automatically::
+
+  kw send-patch -s -3
+  sending failed. Cover letter saved to /path/to/cover-letter.patch
+
+After a failed send, you can recover and reuse the cover letter::
+
+  kw send-patch -s -3 -- /path/to/cover-letter.patch
+
 .. note::
   A `<rev-range>` and existing patch files passed after `--` are mutually
   exclusive. Use either `-s -3` (generate from last 3 commits) or `-s -- *.patch`
   (send existing files), but not both.
-
