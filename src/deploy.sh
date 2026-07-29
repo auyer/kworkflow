@@ -174,23 +174,6 @@ function deploy_main()
     uninstall='__kw_uninstall_all__'
   fi
 
-  # Uninstall option
-  if [[ -n "$uninstall" || -n "$uninstall_remove_first" ]]; then
-    start=$(date +%s)
-    run_kernel_uninstall "$target" "$reboot" "$uninstall" "$force" "$flag"
-    ret="$?"
-    end=$(date +%s)
-    runtime=$((end - start))
-
-    if [[ "$ret" == 0 ]]; then
-      statistics_manager 'uninstall' "$start" "$runtime" '' "$flag"
-    else
-      statistics_manager 'uninstall' "$start" "$runtime" 'failure' "$flag"
-    fi
-
-    return "$?"
-  fi
-
   prepare_host_deploy_dir
 
   # We don't want to run the setup if the user request the package creation
@@ -219,6 +202,23 @@ function deploy_main()
     fi
 
     collect_target_info_for_deploy "$target" "$flag"
+  fi
+
+  # Uninstall option
+  if [[ -n "$uninstall" || -n "$uninstall_remove_first" ]]; then
+    start=$(date +%s)
+    run_kernel_uninstall "$target" "$reboot" "$uninstall" "$force" "$flag"
+    ret="$?"
+    end=$(date +%s)
+    runtime=$((end - start))
+
+    if [[ "$ret" == 0 ]]; then
+      statistics_manager 'uninstall' "$start" "$runtime" '' "$flag"
+    else
+      statistics_manager 'uninstall' "$start" "$runtime" 'failure' "$flag"
+    fi
+
+    return "$?"
   fi
 
   # NOTE: If we deploy a new kernel image that does not match with the modules,
